@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useJamBus } from '../../context/JamBusContext';
 import { useLibrary, useStemAudio, type LaneId, type Song, type Stem } from '../../context/LibraryContext';
 import { useUserPreferences } from '../../context/UserPreferencesContext';
-import { bounceStem, compressBlob, encodeWav, type MixSettings } from '../../lib/audioEngine';
+import type { MixSettings } from '../../lib/audioEngine';
 import { cx, formatBytes, formatTime } from '../../lib/utils';
 import { Knob } from './Knob';
 import { Waveform } from './Waveform';
@@ -42,10 +42,10 @@ export function TrackLane({
   onStopRecord,
   onSeek,
 }: TrackLaneProps) {
-  const { dispatch, activeVersion } = useLibrary();
+  const { dispatch, bandId } = useLibrary();
   const { socket } = useJamBus();
-  const { me, roomChannelId } = useUserPreferences();
-  const { buffer, peaks } = useStemAudio(stem, song);
+  const { me } = useUserPreferences();
+  const { buffer, peaks, error: audioError } = useStemAudio(stem, song);
   const [publish, setPublish] = useState<PublishPhase>({ kind: 'idle' });
 
   const stemDuration = buffer?.duration ?? 0;
@@ -57,32 +57,30 @@ export function TrackLane({
     dispatch({ type: 'stem/update', laneId: lane.id, patch: { mix: { ...stem.mix, ...patch } } });
   };
 
+  /**
+   * Publish = upload the original compressed take (Opus/AAC from MediaRecorder,
+   * roughly 1 MB per minute) so the whole band can play it. Trim and mixer
+   * settings stay non-destructive and sync separately, so they can still be changed.
+   */
   const doPublish = async () => {
-    if (!stem || !buffer) return;
+    if (!stem || stem.source.type !== 'recording') return;
+    const source = stem.source;
     try {
-      setPublish({ kind: 'working', step: 'Bouncing mix', progress: 0.1 });
-      const bounced = await bounceStem(buffer, stem.trimStart, stem.trimEnd, stem.mix);
-      setPublish({ kind: 'working', step: 'Encoding WAV 16-bit / 22 kHz', progress: 0.35 });
-      const wav = encodeWav(bounced);
-      setPublish({ kind: 'working', step: 'Compressing', progress: 0.5 });
-      const { payload, encoding } = await compressBlob(wav);
-      const path = `bands/${roomChannelId}/songs/${song.id}/${activeVersion.id}/${lane.id}.wav${encoding === 'gzip' ? '.gz' : ''}`;
-
-      // Mock bucket upload — swap for a signed-URL PUT (S3/GCS/Supabase Storage).
-      const chunks = 8;
-      for (let i = 1; i <= chunks; i++) {
-        await new Promise((r) => setTimeout(r, 90 + Math.random() * 80));
-        setPublish({ kind: 'working', step: `Uploading ${formatBytes((payload.size * i) / chunks)}`, progress: 0.5 + (0.5 * i) / chunks });
-      }
-
-      const rawBytes = Math.round(buffer.length * buffer.numberOfChannels * 4);
+      setPublish({ kind: 'working', step: 'Preparing', progress: 0.02 });
+      const blob = await fetch(source.blobUrl).then((r) => r.blob());
+      const result = await uploadWithProgress(`/api/bands/${encodeURIComponent(bandId)}/audio`, blob, source.mime, (f) =>
+        setPublish({ kind: 'working', step: `Uploading ${formatBytes(blob.size * f)} of ${formatBytes(blob.size)}`, progress: 0.05 + f * 0.95 }),
+      );
       dispatch({
         type: 'stem/update',
         laneId: lane.id,
-        patch: { published: { rawBytes, payloadBytes: payload.size, encoding, path, at: Date.now() } },
+        patch: {
+          source: { type: 'shared', url: result.url, mime: source.mime },
+          published: { bytes: result.size, at: Date.now(), by: me.displayName },
+        },
       });
-      socket.sendEphemeral({ kind: 'publish', memberId: me.id, trackName: `${song.title} · ${lane.name}`, bytes: payload.size });
-      socket.log(`Published ${lane.name} to blueprint (${formatBytes(payload.size)}, ${encoding})`, 'studio', 'you');
+      socket.sendEphemeral({ kind: 'publish', memberId: me.id, trackName: `${song.title} · ${lane.name}`, bytes: result.size });
+      socket.log(`Published ${lane.name} to the band (${formatBytes(result.size)})`, 'studio', 'you');
       setPublish({ kind: 'idle' });
     } catch (e) {
       setPublish({ kind: 'error', message: (e as Error).message });
@@ -128,7 +126,11 @@ export function TrackLane({
       <div className="min-w-0">
         {stem ? (
           <div style={{ width: `${widthPct}%` }}>
-            {peaks.length ? (
+            {audioError ? (
+              <div className="grid h-14 place-items-center rounded-lg border border-dashed border-line px-3 text-center text-xs text-muted">
+                🎙️ {audioError}
+              </div>
+            ) : peaks.length ? (
               <Waveform
                 peaks={peaks}
                 color={lane.color}
@@ -149,12 +151,16 @@ export function TrackLane({
           </div>
         )}
         <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[10px] text-muted">
-          {stem?.published ? (
-            <span className="rounded bg-ok/15 px-1.5 py-0.5 font-mono text-ok" title={stem.published.path}>
-              ☁ published · {formatBytes(stem.published.payloadBytes)} ({Math.round((1 - stem.published.payloadBytes / stem.published.rawBytes) * 100)}% smaller)
+          {stem?.source.type === 'shared' ? (
+            <span className="rounded bg-ok/15 px-1.5 py-0.5 font-mono text-ok" title="Stored on the server; every bandmate can play it">
+              ☁ shared with the band{stem.published ? ` · ${formatBytes(stem.published.bytes)} · by ${stem.published.by}` : ''}
+            </span>
+          ) : stem?.source.type === 'recording' ? (
+            <span className="rounded bg-accent-soft px-1.5 py-0.5 font-mono text-accent" title="Only on the recording device until published">
+              ✎ draft · only on {stem.author}’s device
             </span>
           ) : stem ? (
-            <span className="font-mono">draft · {stem.source.type === 'recording' ? 'browser take' : 'demo stem'}</span>
+            <span className="font-mono">demo stem · plays for everyone</span>
           ) : null}
           {publish.kind === 'working' && (
             <span className="flex items-center gap-1.5">
@@ -210,13 +216,45 @@ export function TrackLane({
         </button>
         <button
           onClick={() => void doPublish()}
-          disabled={!stem || !buffer || publish.kind === 'working' || !!stem?.published}
+          disabled={stem?.source.type !== 'recording' || !buffer || publish.kind === 'working'}
           className="jp-btn-accent px-2.5 text-xs"
-          title="Bounce, compress, and upload this layer"
+          title={
+            stem?.source.type === 'recording'
+              ? 'Upload this take so the whole band can hear it'
+              : 'Already shared: mixer and trim changes sync automatically'
+          }
         >
-          {stem?.published ? '✓ Synced' : 'Publish to Blueprint'}
+          {publish.kind === 'working' ? 'Publishing…' : stem?.source.type === 'recording' ? 'Publish to Blueprint' : '✓ Shared'}
         </button>
       </div>
     </div>
   );
+}
+
+/** POST a blob with upload progress (fetch can't report upload progress). */
+function uploadWithProgress(
+  url: string,
+  blob: Blob,
+  mime: string,
+  onProgress: (fraction: number) => void,
+): Promise<{ id: string; url: string; size: number }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', url);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader('content-type', mime);
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
+    xhr.onload = () => {
+      let body: { id?: string; url?: string; size?: number; error?: string } = {};
+      try {
+        body = JSON.parse(xhr.responseText);
+      } catch {
+        /* non-JSON error page */
+      }
+      if (xhr.status >= 200 && xhr.status < 300 && body.url) resolve(body as { id: string; url: string; size: number });
+      else reject(new Error(body.error ?? `Upload failed (${xhr.status})`));
+    };
+    xhr.onerror = () => reject(new Error('Network error while uploading. Check your connection and try again.'));
+    xhr.send(blob);
+  });
 }

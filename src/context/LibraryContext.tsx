@@ -1,4 +1,6 @@
-import { createContext, use, useEffect, useMemo, useReducer, useState, type ReactNode } from 'react';
+import { createContext, use, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { ApiError, call } from '../auth/api';
+import { useJamBus } from './JamBusContext';
 import { DEFAULT_MIX, computePeaks, synthDemoStem, type DemoKind, type MixSettings } from '../lib/audioEngine';
 import { uid } from '../lib/utils';
 import type { SectionKind } from '../types';
@@ -17,14 +19,21 @@ export const LANES: Array<{ id: LaneId; name: string; color: string; emoji: stri
   { id: 'vocals', name: 'Vocals', color: '#8FB996', emoji: '🎤' },
 ];
 
-export type StemSource = { type: 'demo'; kind: DemoKind } | { type: 'recording'; blobUrl: string; mime: string };
+/**
+ * Where a stem's audio comes from:
+ *  - demo:      synthesized locally (identical on every device)
+ *  - recording: a fresh take that exists only on the recording device (a draft)
+ *  - shared:    a published take stored on the server for the whole band
+ */
+export type StemSource =
+  | { type: 'demo'; kind: DemoKind }
+  | { type: 'recording'; blobUrl: string; mime: string }
+  | { type: 'shared'; url: string; mime: string };
 
 export interface PublishedInfo {
-  rawBytes: number;
-  payloadBytes: number;
-  encoding: 'gzip' | 'identity';
-  path: string;
+  bytes: number;
   at: number;
+  by: string;
 }
 
 export interface Stem {
@@ -219,66 +228,110 @@ const SEED_SETLISTS: Setlist[] = [
 const bufferCache = new Map<string, Promise<AudioBuffer>>();
 const peakCache = new Map<string, number[]>();
 
+const decode = (ab: ArrayBuffer) => new OfflineAudioContext(1, 1, 44100).decodeAudioData(ab);
+
+const sourceKey = (stem: Stem, song: Song) =>
+  stem.source.type === 'demo' ? `${stem.source.kind}:${song.id}:${song.bpm}:${song.bars}` : stem.source.type === 'shared' ? stem.source.url : stem.source.blobUrl;
+
 export function getStemBuffer(stem: Stem, song: Song): Promise<AudioBuffer> {
-  const key = stem.source.type === 'demo' ? `${stem.source.kind}:${song.id}` : stem.source.blobUrl;
+  const key = sourceKey(stem, song);
   let p = bufferCache.get(key);
   if (!p) {
     const source = stem.source;
-    p =
-      source.type === 'demo'
-        ? Promise.resolve(synthDemoStem(source.kind, song.progression, song.bpm, song.bars))
-        : fetch(source.blobUrl)
-            .then((r) => r.arrayBuffer())
-            .then((ab) => new OfflineAudioContext(1, 1, 44100).decodeAudioData(ab));
+    if (source.type === 'demo') {
+      p = Promise.resolve(synthDemoStem(source.kind, song.progression, song.bpm, song.bars));
+    } else {
+      const url = source.type === 'shared' ? source.url : source.blobUrl;
+      p = fetch(url, { credentials: 'same-origin' })
+        .then((r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.arrayBuffer();
+        })
+        .then(decode);
+    }
+    // Don't cache failures (e.g. a draft that's not on this device yet, or a network blip).
+    p.catch(() => bufferCache.delete(key));
     bufferCache.set(key, p);
   }
   return p;
 }
 
-export function useStemAudio(stem: Stem | undefined, song: Song): { buffer: AudioBuffer | null; peaks: number[] } {
-  const [state, setState] = useState<{ id: string | null; buffer: AudioBuffer | null; peaks: number[] }>({
-    id: null,
-    buffer: null,
-    peaks: [],
-  });
+export interface StemAudio {
+  buffer: AudioBuffer | null;
+  peaks: number[];
+  /** Set when the audio can't be loaded here (e.g. someone else's unpublished draft). */
+  error: string | null;
+}
+
+export function useStemAudio(stem: Stem | undefined, song: Song): StemAudio {
+  const [state, setState] = useState<{ key: string | null } & StemAudio>({ key: null, buffer: null, peaks: [], error: null });
+  const key = stem ? sourceKey(stem, song) : null;
   useEffect(() => {
-    if (!stem) return;
+    if (!stem || !key) return;
     let alive = true;
-    getStemBuffer(stem, song).then((buffer) => {
-      if (!alive) return;
-      const pk = `${stem.id}:${buffer.length}`;
-      let peaks = peakCache.get(pk);
-      if (!peaks) {
-        peaks = computePeaks(buffer);
-        peakCache.set(pk, peaks);
-      }
-      setState({ id: stem.id, buffer, peaks });
-    });
+    getStemBuffer(stem, song).then(
+      (buffer) => {
+        if (!alive) return;
+        let peaks = peakCache.get(key);
+        if (!peaks) {
+          peaks = computePeaks(buffer);
+          peakCache.set(key, peaks);
+        }
+        setState({ key, buffer, peaks, error: null });
+      },
+      (e: Error) => {
+        if (!alive) return;
+        setState({
+          key,
+          buffer: null,
+          peaks: [],
+          error:
+            stem.source.type === 'recording'
+              ? `${stem.author}’s draft. It plays once they publish it.`
+              : `Couldn’t load this recording (${e.message}).`,
+        });
+      },
+    );
     return () => {
       alive = false;
     };
-  }, [stem, song]);
-  return stem && state.id === stem.id ? state : { buffer: null, peaks: [] };
+    // Re-load only when the audio source changes, not on every mixer tweak.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  return state.key === key ? state : { buffer: null, peaks: [], error: null };
 }
 
 /* ------------------------------------------------------------------ */
 /*  Reducer                                                             */
 /* ------------------------------------------------------------------ */
 
-interface LibraryState {
+/** The part of the library shared with the whole band (saved on the server). */
+export interface LibraryDoc {
   songs: Song[];
   setlists: Setlist[];
+}
+
+/** Per-person view state (never shared). */
+interface LocalView {
   activeSongId: string;
   activeVersionId: string;
   queue: { setlistId: string; index: number } | null;
 }
 
-type LibraryAction =
+type LibraryState = LibraryDoc & LocalView;
+
+/** Where a stem/version edit applies. Captured at dispatch time so a later re-apply hits the same version. */
+interface Target {
+  songId: string;
+  versionId: string;
+}
+
+export type LibraryAction =
   | { type: 'song/select'; songId: string }
   | { type: 'version/select'; versionId: string }
-  | { type: 'stem/set'; laneId: LaneId; stem: Stem | null }
-  | { type: 'stem/update'; laneId: LaneId; patch: Partial<Omit<Stem, 'id' | 'laneId'>> }
-  | { type: 'version/fork'; newId: string; label: string; note: string }
+  | { type: 'stem/set'; laneId: LaneId; stem: Stem | null; at?: Target }
+  | { type: 'stem/update'; laneId: LaneId; patch: Partial<Omit<Stem, 'id' | 'laneId'>>; at?: Target }
+  | { type: 'version/fork'; newId: string; label: string; note: string; createdAt?: number; at?: Target }
   | { type: 'setlist/create'; setlist: Setlist }
   | { type: 'setlist/rename'; id: string; name: string }
   | { type: 'setlist/delete'; id: string }
@@ -289,14 +342,19 @@ type LibraryAction =
   | { type: 'queue/step'; dir: 1 | -1 }
   | { type: 'queue/clear' };
 
+/** Actions that only change what *I'm* looking at; everything else is saved for the band. */
+const LOCAL_ONLY = new Set<LibraryAction['type']>(['song/select', 'version/select', 'queue/load', 'queue/step', 'queue/clear']);
+
 const latestVersion = (song: Song) => song.versions[song.versions.length - 1];
 
-const mapActiveVersion = (s: LibraryState, fn: (v: SongVersion) => SongVersion): LibraryState => ({
+const mapVersion = (s: LibraryState, at: Target, fn: (v: SongVersion) => SongVersion): LibraryState => ({
   ...s,
   songs: s.songs.map((song) =>
-    song.id !== s.activeSongId ? song : { ...song, versions: song.versions.map((v) => (v.id === s.activeVersionId ? fn(v) : v)) },
+    song.id !== at.songId ? song : { ...song, versions: song.versions.map((v) => (v.id === at.versionId ? fn(v) : v)) },
   ),
 });
+
+const activeTarget = (s: LibraryState): Target => ({ songId: s.activeSongId, versionId: s.activeVersionId });
 
 function selectSong(s: LibraryState, songId: string): LibraryState {
   const song = s.songs.find((x) => x.id === songId);
@@ -311,40 +369,39 @@ function reducer(s: LibraryState, a: LibraryAction): LibraryState {
     case 'version/select':
       return { ...s, activeVersionId: a.versionId };
     case 'stem/set':
-      return mapActiveVersion(s, (v) => {
+      return mapVersion(s, a.at ?? activeTarget(s), (v) => {
         const stems = { ...v.stems };
         if (a.stem) stems[a.laneId] = a.stem;
         else delete stems[a.laneId];
         return { ...v, stems };
       });
     case 'stem/update':
-      return mapActiveVersion(s, (v) => {
+      return mapVersion(s, a.at ?? activeTarget(s), (v) => {
         const cur = v.stems[a.laneId];
         if (!cur) return v;
-        // Any edit invalidates a previous publish.
-        const published = 'published' in a.patch ? a.patch.published : undefined;
+        // Mixer/trim edits are non-destructive; only replacing the audio resets "published".
+        const published = a.patch.source ? a.patch.published : 'published' in a.patch ? a.patch.published : cur.published;
         return { ...v, stems: { ...v.stems, [a.laneId]: { ...cur, ...a.patch, published } } };
       });
     case 'version/fork': {
-      return {
-        ...s,
-        activeVersionId: a.newId,
-        songs: s.songs.map((song) => {
-          if (song.id !== s.activeSongId) return song;
-          const base = song.versions.find((v) => v.id === s.activeVersionId) ?? latestVersion(song);
-          const fork: SongVersion = {
-            id: a.newId,
-            parentId: base.id,
-            label: a.label,
-            note: a.note,
-            createdAt: Date.now(),
-            stems: { ...base.stems },
-          };
-          return { ...song, versions: [...song.versions, fork] };
-        }),
-      };
+      const at = a.at ?? activeTarget(s);
+      const songs = s.songs.map((song) => {
+        if (song.id !== at.songId || song.versions.some((v) => v.id === a.newId)) return song;
+        const base = song.versions.find((v) => v.id === at.versionId) ?? latestVersion(song);
+        const fork: SongVersion = {
+          id: a.newId,
+          parentId: base.id,
+          label: a.label,
+          note: a.note,
+          createdAt: a.createdAt ?? Date.now(),
+          stems: { ...base.stems },
+        };
+        return { ...song, versions: [...song.versions, fork] };
+      });
+      return { ...s, songs, activeVersionId: s.activeSongId === at.songId ? a.newId : s.activeVersionId };
     }
     case 'setlist/create':
+      if (s.setlists.some((l) => l.id === a.setlist.id)) return s;
       return { ...s, setlists: [...s.setlists, a.setlist] };
     case 'setlist/rename':
       return { ...s, setlists: s.setlists.map((l) => (l.id === a.id ? { ...l, name: a.name } : l)) };
@@ -395,14 +452,30 @@ function reducer(s: LibraryState, a: LibraryAction): LibraryState {
   }
 }
 
+const pickDoc = (s: LibraryState): LibraryDoc => ({ songs: s.songs, setlists: s.setlists });
+const pickLocal = (s: LibraryState): LocalView => ({ activeSongId: s.activeSongId, activeVersionId: s.activeVersionId, queue: s.queue });
+
+/** Keep my selection valid when the band's library changes under me. */
+function normalize(s: LibraryState): LibraryState {
+  if (!s.songs.length) return s;
+  const song = s.songs.find((x) => x.id === s.activeSongId) ?? s.songs[0];
+  const version = song.versions.find((v) => v.id === s.activeVersionId) ?? latestVersion(song);
+  return { ...s, activeSongId: song.id, activeVersionId: version.id };
+}
+
 /* ------------------------------------------------------------------ */
-/*  Provider                                                            */
+/*  Provider — loads the band's shared library and keeps it in sync     */
 /* ------------------------------------------------------------------ */
+
+export type SyncStatus = 'loading' | 'saved' | 'saving' | 'offline' | 'error';
 
 export interface LibraryValue extends LibraryState {
   activeSong: Song;
   activeVersion: SongVersion;
   queueList: Setlist | null;
+  sync: SyncStatus;
+  syncError: string | null;
+  bandId: string;
   dispatch: (a: LibraryAction) => void;
   forkVersion: (label: string, note?: string) => void;
   createSetlist: (name: string) => void;
@@ -412,14 +485,168 @@ export interface LibraryValue extends LibraryState {
 
 const LibraryContext = createContext<LibraryValue | null>(null);
 
-export function LibraryProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(reducer, undefined, () => ({
-    songs: SEED_SONGS,
-    setlists: SEED_SETLISTS,
+const SAVE_DEBOUNCE_MS = 500;
+const seedDoc = (): LibraryDoc => ({ songs: SEED_SONGS, setlists: SEED_SETLISTS });
+
+const libraryPath = (bandId: string) => `/api/bands/${encodeURIComponent(bandId)}/library`;
+
+/**
+ * Sync model (optimistic, conflict-safe):
+ *   confirmed = last copy the server accepted (+ its rev)
+ *   pending   = my edits not yet acknowledged
+ *   shown     = pending replayed on top of confirmed
+ * Saving sends `shown` with the confirmed rev. If a bandmate saved first the
+ * server returns its copy (409): it becomes `confirmed`, my pending edits are
+ * replayed on top, and we save again. Bandmates are pinged over the jam
+ * socket after each save and refetch.
+ */
+export function LibraryProvider({ bandId, children }: { bandId: string; children: ReactNode }) {
+  const { socket } = useJamBus();
+
+  const [confirmed, setConfirmed] = useState<{ rev: number; doc: LibraryDoc } | null>(null);
+  const [pending, setPending] = useState<LibraryAction[]>([]);
+  const [local, setLocal] = useState<LocalView>(() => ({
     activeSongId: SEED_SONGS[0].id,
     activeVersionId: latestVersion(SEED_SONGS[0]).id,
     queue: null,
   }));
+  const [sync, setSync] = useState<SyncStatus>('loading');
+  const [syncError, setSyncError] = useState<string | null>(null);
+
+  const state = useMemo<LibraryState>(() => {
+    const base: LibraryState = { ...(confirmed?.doc ?? seedDoc()), ...local };
+    return normalize(pending.reduce(reducer, base));
+  }, [confirmed, pending, local]);
+
+  // Refs so async save/refetch code always sees the latest values.
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const confirmedRef = useRef(confirmed);
+  confirmedRef.current = confirmed;
+  const pendingRef = useRef(pending);
+  pendingRef.current = pending;
+  const inFlight = useRef(false);
+  /** Update the ref immediately so a retry scheduled right away sees the new base. */
+  const adoptConfirmed = (next: { rev: number; doc: LibraryDoc }) => {
+    confirmedRef.current = next;
+    setConfirmed(next);
+  };
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const retryDelay = useRef(1000);
+
+  /* ---------- load / refetch ---------- */
+  const refetch = useCallback(async () => {
+    try {
+      const r = await call<{ rev: number; doc: LibraryDoc | null }>('GET', libraryPath(bandId));
+      const cur = confirmedRef.current;
+      if (!cur || r.rev > cur.rev || (r.rev === 0 && cur.rev === 0)) {
+        adoptConfirmed({ rev: r.rev, doc: r.doc ?? seedDoc() });
+      }
+      setSync(pendingRef.current.length ? 'saving' : 'saved');
+      setSyncError(null);
+      // A brand-new band: store the starter songs so everyone shares them.
+      if (r.rev === 0 && !r.doc && !pendingRef.current.length) scheduleSave(0);
+    } catch (e) {
+      const err = e as ApiError;
+      setSync(err.status === 0 ? 'offline' : 'error');
+      setSyncError(err.message);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bandId]);
+
+  useEffect(() => {
+    void refetch();
+  }, [refetch]);
+
+  /* ---------- save ---------- */
+  const flush = useCallback(async () => {
+    if (inFlight.current) return;
+    const base = confirmedRef.current;
+    if (!base) return;
+    const sentActions = pendingRef.current;
+    const isSeed = base.rev === 0;
+    if (!sentActions.length && !isSeed) {
+      setSync('saved');
+      return;
+    }
+    inFlight.current = true;
+    setSync('saving');
+    const doc = pickDoc(normalize(sentActions.reduce(reducer, { ...base.doc, ...pickLocal(stateRef.current) })));
+    try {
+      const r = await call<{ rev: number }>('PUT', libraryPath(bandId), { baseRev: base.rev, doc });
+      adoptConfirmed({ rev: r.rev, doc });
+      pendingRef.current = pendingRef.current.slice(sentActions.length);
+      setPending((p) => p.slice(sentActions.length));
+      retryDelay.current = 1000;
+      setSyncError(null);
+      socket.sendEphemeral({ kind: 'library', rev: r.rev });
+      inFlight.current = false;
+      if (pendingRef.current.length > sentActions.length) scheduleSave();
+      else setSync('saved');
+    } catch (e) {
+      inFlight.current = false;
+      const err = e as ApiError;
+      if (err.status === 409) {
+        // Someone saved first: adopt their copy, replay mine on top, try again.
+        const latest = err.body as { rev: number; doc: LibraryDoc | null } | undefined;
+        if (latest?.doc) adoptConfirmed({ rev: latest.rev, doc: latest.doc });
+        else await refetch();
+        scheduleSave(0);
+      } else {
+        setSync(err.status === 0 ? 'offline' : 'error');
+        setSyncError(err.message);
+        if (err.status === 0 || err.status >= 500) {
+          scheduleSave(retryDelay.current);
+          retryDelay.current = Math.min(30_000, retryDelay.current * 2);
+        }
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bandId, socket]);
+
+  const flushRef = useRef(flush);
+  flushRef.current = flush;
+  function scheduleSave(delay = SAVE_DEBOUNCE_MS) {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => void flushRef.current(), delay);
+  }
+
+  /* ---------- bandmates' saves ---------- */
+  useEffect(
+    () =>
+      socket.onEphemeral((msg) => {
+        if (msg.kind === 'library' && msg.rev > (confirmedRef.current?.rev ?? 0)) void refetch();
+      }),
+    [socket, refetch],
+  );
+  // Catch up after a reconnect or when coming back to the tab.
+  useEffect(() => {
+    if (socket.status === 'open') void refetch();
+  }, [socket.status, refetch]);
+  useEffect(() => {
+    const onFocus = () => document.visibilityState === 'visible' && void refetch();
+    document.addEventListener('visibilitychange', onFocus);
+    return () => document.removeEventListener('visibilitychange', onFocus);
+  }, [refetch]);
+  // Try to save anything outstanding before the page goes away.
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  /* ---------- dispatch ---------- */
+  const dispatch = useCallback((a: LibraryAction) => {
+    const cur = stateRef.current;
+    // Pin version-scoped edits to the version on screen right now.
+    const action =
+      (a.type === 'stem/set' || a.type === 'stem/update' || a.type === 'version/fork') && !a.at
+        ? { ...a, at: activeTarget(cur), ...(a.type === 'version/fork' ? { createdAt: Date.now() } : {}) }
+        : a;
+    setLocal(pickLocal(normalize(reducer(cur, action))));
+    if (!LOCAL_ONLY.has(action.type)) {
+      setPending((p) => [...p, action]);
+      setSync('saving');
+      scheduleSave();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const value = useMemo<LibraryValue>(() => {
     const activeSong = state.songs.find((s) => s.id === state.activeSongId) ?? state.songs[0];
@@ -429,23 +656,28 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       activeSong,
       activeVersion,
       queueList: state.queue ? (state.setlists.find((l) => l.id === state.queue!.setlistId) ?? null) : null,
+      sync,
+      syncError,
+      bandId,
       dispatch,
       forkVersion: (label, note = '') => dispatch({ type: 'version/fork', newId: uid('v'), label, note }),
       createSetlist: (name) => dispatch({ type: 'setlist/create', setlist: { id: uid('set'), name, songIds: [] } }),
       preloadSetlist: async (setlistId) => {
         const list = state.setlists.find((l) => l.id === setlistId);
         if (!list) return 0;
-        const jobs: Promise<AudioBuffer>[] = [];
+        const jobs: Promise<AudioBuffer | null>[] = [];
         for (const songId of list.songIds) {
           const song = state.songs.find((s) => s.id === songId);
           if (!song) continue;
-          Object.values(latestVersion(song).stems).forEach((stem) => stem && jobs.push(getStemBuffer(stem, song)));
+          Object.values(latestVersion(song).stems).forEach(
+            (stem) => stem && jobs.push(getStemBuffer(stem, song).catch(() => null)),
+          );
         }
-        await Promise.all(jobs);
-        return jobs.length;
+        const loaded = await Promise.all(jobs);
+        return loaded.filter(Boolean).length;
       },
     };
-  }, [state]);
+  }, [state, sync, syncError, bandId, dispatch]);
 
   return <LibraryContext value={value}>{children}</LibraryContext>;
 }

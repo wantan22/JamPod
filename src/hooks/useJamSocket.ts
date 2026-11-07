@@ -14,7 +14,9 @@ export type EphemeralMessage =
   | { kind: 'media'; media: ImportedMedia }
   | { kind: 'transport'; playing: boolean; t: number; at: number }
   | { kind: 'publish'; memberId: string; trackName: string; bytes: number }
-  | { kind: 'companion-ping'; memberId: string; micLive: boolean };
+  | { kind: 'companion-ping'; memberId: string; micLive: boolean }
+  /** A bandmate saved the shared library; refetch if `rev` is newer than ours. */
+  | { kind: 'library'; rev: number };
 
 type WireMessage =
   | { type: 'action'; from: string; action: SharedAction }

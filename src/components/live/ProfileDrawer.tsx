@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useSession } from '../../auth/SessionContext';
 import { useUserPreferences } from '../../context/UserPreferencesContext';
 import { cx } from '../../lib/utils';
@@ -176,11 +176,83 @@ export function ProfileDrawer({ open, onClose }: ProfileDrawerProps) {
               Log out
             </button>
           </div>
+          <ChangePassword />
           <button onClick={leaveBand} className="mt-2 w-full rounded-xl px-3 py-1.5 text-xs font-bold text-muted hover:bg-danger/10 hover:text-danger">
             Leave this band
           </button>
         </section>
       </aside>
     </div>
+  );
+}
+
+/** Collapsible "change password" form. Signs out the account's other devices. */
+function ChangePassword() {
+  const { changePassword } = useSession();
+  const [open, setOpen] = useState(false);
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} className="jp-btn mt-2 w-full">
+        🔑 Change password
+      </button>
+    );
+  }
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (next.length < 8) return setMsg({ ok: false, text: 'New password must be at least 8 characters.' });
+    setBusy(true);
+    setMsg(null);
+    try {
+      await changePassword(current, next);
+      setMsg({ ok: true, text: 'Password changed. Your other devices have been signed out.' });
+      setCurrent('');
+      setNext('');
+    } catch (err) {
+      setMsg({ ok: false, text: (err as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form onSubmit={(e) => void submit(e)} className="mt-2 space-y-2 rounded-xl border border-line p-3">
+      <input
+        type="password"
+        value={current}
+        onChange={(e) => setCurrent(e.target.value)}
+        autoComplete="current-password"
+        placeholder="Current password"
+        aria-label="Current password"
+        className="jp-input py-1.5"
+      />
+      <input
+        type="password"
+        value={next}
+        onChange={(e) => setNext(e.target.value)}
+        autoComplete="new-password"
+        placeholder="New password (8+ characters)"
+        aria-label="New password"
+        className="jp-input py-1.5"
+      />
+      {msg && (
+        <p role={msg.ok ? 'status' : 'alert'} className={cx('text-xs font-semibold', msg.ok ? 'text-ok' : 'text-danger')}>
+          {msg.text}
+        </p>
+      )}
+      <div className="flex gap-2">
+        <button type="submit" disabled={busy || !current || !next} className="jp-btn-accent flex-1 py-1.5 text-xs">
+          {busy ? 'Saving…' : 'Save password'}
+        </button>
+        <button type="button" onClick={() => setOpen(false)} className="jp-btn py-1.5 text-xs">
+          Close
+        </button>
+      </div>
+    </form>
   );
 }

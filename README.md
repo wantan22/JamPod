@@ -19,7 +19,22 @@ Open <http://localhost:5173>. The dev server runs the whole stack on one origin:
 2. **Pick a jam room.** Each band is its own room. One person can be in several bands (up to 20) and plays a seat in each: seat 1 is drums, 2 keys, 3 bass, 4 guitar. A band holds up to 4 people, one per stage station.
 3. **Start a band** to get a 6-character invite code, or **join** with a code someone sent you. The **🔗 invite** button in the studio header copies a link with the code. Opening it signs the person in or up and adds them to the band.
 
-Inside a room, click the logo or **⇦ rooms** to switch bands. The profile drawer has **Switch room**, **Leave this band** and **Log out**. Your display name, character style and tint are saved to your account and follow you into every band.
+Inside a room, click the logo or **⇦ rooms** to switch bands. The profile drawer has **Switch room**, **Change password**, **Leave this band** and **Log out**. Your display name, character style and tint are saved to your account and follow you into every band.
+
+**Forgot password.** The login screen has a **Forgot password?** link that emails a one-time reset link, valid for 30 minutes. Using it signs the account out everywhere else. Changing your password signs out your other devices. To send these emails, set `BREVO_API_KEY` and `EMAIL_FROM` (a sender address you verified in Brevo); `RESEND_API_KEY` also works. With no email service set, the link is printed to the server log so the app owner can pass it on. Links use `APP_URL`, or `RENDER_EXTERNAL_URL` on Render, so they always point at your real site.
+
+## Shared Song Studio library
+
+Each band's songs, versions, mixer and trim settings, and setlists are stored on the server and shared live:
+- Edits save automatically. The Song Studio header shows **✓ saved / saving… / offline**.
+- Bandmates see changes within about a second, through a ping over the jam relay.
+- The library is one JSON document per band with a revision number. If two people edit at the same time, the later save gets the newer copy back, replays its own edits on top and saves again, so nobody's change is lost.
+
+**Recordings:**
+- A new take is a **draft** that exists only on the recording device.
+- **Publish to Blueprint** uploads the original compressed recording (Opus or AAC from the browser, about 1 MB per minute), and every member can then play it.
+- Trim and mixer settings stay non-destructive and sync separately.
+- Limits: 15 MB per take and 200 MB per band. Recordings are stored in Postgres, so they need no extra storage setup.
 
 **Security:**
 - Passwords are hashed with scrypt and a per-user salt.
@@ -51,6 +66,9 @@ To test with two people on one computer, use two browsers (or a normal and a pri
 | `POST /api/register`, `/api/login`, `/api/logout` | Account and session |
 | `GET /api/me`, `PATCH /api/me` | Current user and bands, and profile edits |
 | `POST /api/bands`, `/api/bands/join`, `/api/bands/leave` | Band membership |
+| `POST /api/password/forgot`, `/api/password/reset`, `/api/password/change` | Reset by email link, or change while signed in |
+| `GET` / `PUT /api/bands/:id/library` | The band's shared library (`PUT` takes `baseRev` and returns 409 with the latest copy on a conflict) |
+| `POST /api/bands/:id/audio`, `GET /api/bands/:id/audio/:audioId` | Publish and download recordings (members only) |
 | `GET /jam/health`, `/jam/info` | Relay stats, and LAN IPs for invite and QR links |
 
 ## Production
@@ -74,6 +92,9 @@ Render's free web service supports WebSockets but has no disk, so accounts live 
    `postgresql://jampod_app.<project-ref>:<password>@<pooler-host>:5432/postgres`
 2. **GitHub:** push this folder to its own repository.
 3. **Render:** choose **New → Blueprint** and pick the repo; `render.yaml` sets up everything else. When asked for `DATABASE_URL`, paste the connection string.
+4. **Optional, for password-reset emails:** in the Render service's **Environment** tab, add `BREVO_API_KEY` and `EMAIL_FROM`.
+
+**Upgrading an existing database:** run `server/supabase-update-2.sql` once in the Supabase SQL editor. If you forget, the server logs a warning, and the affected features answer with a message saying the SQL needs to be run.
 
 Free-tier trade-offs:
 - Render sleeps after 15 minutes without traffic, and the first visit after that takes about a minute.
@@ -105,8 +126,7 @@ New visitors get a 22-step spotlight tour covering setup, the Band Room, Song St
 
 ## What is real vs. mocked
 
-- **Real:** mic capture and filter graph, live chord recognition, MP3 chord extraction (chroma + template matching, runs locally), multi-track playback with live EQ and reverb, MediaRecorder takes, offline bounce → WAV → gzip, multi-device realtime sync through the WebSocket relay, phone companion mic, QR pairing, webcam tile.
-- **Mocked / to wire up:** the cloud bucket upload (a simulated progress loop in `TrackLane.tsx`; replace it with a signed-URL PUT) and WebRTC peer audio/video. `audio.vocalStream` is ready to pass to `RTCPeerConnection.addTrack`, and the relay can carry the signalling.
+- **Real:** mic capture and filter graph, live chord recognition, MP3 chord extraction (chroma + template matching, runs locally), multi-track playback with live EQ and reverb, MediaRecorder takes, publishing takes to the band, a shared band library with conflict-safe sync, accounts with password reset, multi-device realtime sync through the WebSocket relay, phone companion mic, QR pairing, webcam tile.
+- **Not built yet:** WebRTC peer audio and video. `audio.vocalStream` is ready to pass to `RTCPeerConnection.addTrack`, and the relay can carry the signalling.
 - **Backing tracks across devices:** an MP3 stays on the device that loaded it. Bandmates get the chord chart and follow that player's play, pause and seek, so their chord highway scrolls in sync, but the audio itself plays from the loader's speakers. YouTube tracks play on every device.
-- **Song library:** the Song Studio, versions and setlists are still stored per device and not synced yet.
 - **YouTube:** browsers can't decode cross-origin YouTube audio, so YouTube imports use the embedded player plus an editable chord progression.

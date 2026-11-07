@@ -19,3 +19,9 @@ services:
       # Paste the Supabase connection string in the Render dashboard (kept secret).
       - key: DATABASE_URL
         sync: false
+      # Optional — password-reset emails. Add these in the service's
+      # Environment tab (Render only prompts for secrets on first setup):
+      #   BREVO_API_KEY = your Brevo API key
+      #   EMAIL_FROM    = the sender address you verified in Brevo
+      # Without them, reset links are printed to the Render logs instead.
+      # Render sets RENDER_EXTERNAL_URL automatically, which reset links use.

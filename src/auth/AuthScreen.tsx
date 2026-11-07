@@ -1,8 +1,9 @@
 import { useState, type FormEvent } from 'react';
 import { cx } from '../lib/utils';
+import { api } from './api';
 import { useSession } from './SessionContext';
 
-type Mode = 'login' | 'register';
+type Mode = 'login' | 'register' | 'forgot';
 
 /** Log in / create account. Shown only when there's no saved session. */
 export function AuthScreen({ inviteCode }: { inviteCode: string | null }) {
@@ -14,6 +15,7 @@ export function AuthScreen({ inviteCode }: { inviteCode: string | null }) {
   const [showPw, setShowPw] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [resetSent, setResetSent] = useState<'email' | 'manual' | null>(null);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -21,7 +23,12 @@ export function AuthScreen({ inviteCode }: { inviteCode: string | null }) {
     setError(null);
     try {
       if (mode === 'login') await login(email, password);
-      else await register(email, password, displayName);
+      else if (mode === 'register') await register(email, password, displayName);
+      else {
+        const r = await api.forgotPassword(email);
+        setResetSent(r.delivery);
+        setBusy(false);
+      }
     } catch (err) {
       setError((err as Error).message);
       setBusy(false);
@@ -31,7 +38,62 @@ export function AuthScreen({ inviteCode }: { inviteCode: string | null }) {
   const switchMode = (m: Mode) => {
     setMode(m);
     setError(null);
+    setResetSent(null);
   };
+
+  if (mode === 'forgot') {
+    return (
+      <main className="relative z-10 flex min-h-full items-center justify-center p-4">
+        <div className="jp-card w-full max-w-md p-6">
+          <img src="/jampod-logo.webp" alt="" className="mx-auto size-16 rounded-2xl shadow-studio" />
+          <h1 className="mt-4 text-center font-display text-2xl font-bold">Forgot your password?</h1>
+          {resetSent ? (
+            <div className="mt-4 space-y-3 text-sm" role="status">
+              <p className="rounded-xl bg-accent-soft px-4 py-3">
+                If <b>{email}</b> has a JamPod account, a reset link is on its way. It works once, for 30 minutes.
+              </p>
+              {resetSent === 'manual' ? (
+                <p className="text-xs text-muted">
+                  This server doesn’t send emails yet, so the link was given to whoever runs this JamPod server (it’s in the server
+                  logs). Ask them to pass it on.
+                </p>
+              ) : (
+                <p className="text-xs text-muted">Nothing after a few minutes? Check your spam folder, then try again.</p>
+              )}
+            </div>
+          ) : (
+            <form onSubmit={(e) => void submit(e)} className="mt-4 flex flex-col gap-4" noValidate>
+              <p className="text-center text-sm text-muted">Enter your account email and we’ll send you a link to choose a new password.</p>
+              <label className="block">
+                <span className="jp-label">Email</span>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                  autoComplete="email"
+                  inputMode="email"
+                  placeholder="you@example.com"
+                  className="jp-input mt-1.5"
+                />
+              </label>
+              {error && (
+                <p role="alert" className="rounded-lg bg-danger/15 px-3 py-2 text-sm font-semibold text-danger">
+                  {error}
+                </p>
+              )}
+              <button type="submit" disabled={busy || !email.trim()} className="jp-btn-accent py-2.5 text-base">
+                {busy ? 'Sending…' : 'Send reset link'}
+              </button>
+            </form>
+          )}
+          <button onClick={() => switchMode('login')} className="mt-5 w-full text-center text-sm font-bold text-accent hover:underline">
+            ← Back to log in
+          </button>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="relative z-10 flex min-h-full items-center justify-center p-4">
@@ -102,7 +164,13 @@ export function AuthScreen({ inviteCode }: { inviteCode: string | null }) {
             <label className="block">
               <span className="flex items-baseline justify-between">
                 <span className="jp-label">Password</span>
-                {mode === 'register' && <span className="text-[11px] text-muted">At least 8 characters</span>}
+                {mode === 'register' ? (
+                  <span className="text-[11px] text-muted">At least 8 characters</span>
+                ) : (
+                  <button type="button" onClick={() => switchMode('forgot')} className="text-[11px] font-bold text-accent hover:underline">
+                    Forgot password?
+                  </button>
+                )}
               </span>
               <span className="relative mt-1.5 block">
                 <input

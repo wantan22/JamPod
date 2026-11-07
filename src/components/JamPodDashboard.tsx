@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { JamBusProvider } from '../context/JamBusContext';
 import { useSession } from '../auth/SessionContext';
-import { useLibrary } from '../context/LibraryContext';
+import { LibraryProvider, useLibrary } from '../context/LibraryContext';
 import { useUserPreferences } from '../context/UserPreferencesContext';
 import { useAudioProcessor } from '../hooks/useAudioProcessor';
 import { useJamSocket } from '../hooks/useJamSocket';
@@ -43,7 +43,6 @@ const TABS: Array<{ id: TabId; label: string; icon: string; blurb: string }> = [
 export function JamPodDashboard() {
   const prefs = useUserPreferences();
   const { me, members, ledColor, commMode, whiteboard, theme, localMemberId, isSinging, activeRole } = prefs;
-  const { activeSong } = useLibrary();
   const { activeBand, exitRoom } = useSession();
 
   const [tab, setTab] = useState<TabId>('room');
@@ -110,6 +109,7 @@ export function JamPodDashboard() {
 
   return (
     <JamBusProvider value={bus}>
+      <LibraryProvider bandId={activeBand?.id ?? ''}>
       <div className="relative z-10 flex min-h-full flex-col">
         {/* ================= HEADER ================= */}
         <header className="sticky top-0 z-30 border-b border-line bg-bg/85 backdrop-blur-md">
@@ -235,7 +235,7 @@ export function JamPodDashboard() {
                   <span>Tap the whiteboard to edit today’s goals · swap instruments from the header to walk to another station.</span>
                 </div>
 
-                {teleLocked && <Teleprompter song={activeSong} locked onToggleLock={() => setTeleLocked(false)} compact />}
+                {teleLocked && <ActiveSongTeleprompter onUnlock={() => setTeleLocked(false)} />}
 
                 <div className={cx('grid gap-4 md:grid-cols-2', secondary)}>
                   <div data-tour="media">
@@ -249,7 +249,7 @@ export function JamPodDashboard() {
             )}
 
             {tab === 'studio' && <SongStudio />}
-            {tab === 'arrange' && <ArrangementBoard bpm={activeSong.bpm} />}
+            {tab === 'arrange' && <ArrangementForActiveSong />}
             {tab === 'vault' && (
               <MusicVault
                 onOpenStudio={() => setTab('studio')}
@@ -283,6 +283,18 @@ export function JamPodDashboard() {
       <WhiteboardOverlay open={whiteboardOpen} onClose={() => setWhiteboardOpen(false)} />
       <ProfileDrawer open={profileOpen} onClose={() => setProfileOpen(false)} />
       <OnboardingTour open={tourOpen} currentTab={tab} onTab={setTab} onClose={() => setTourOpen(false)} />
+      </LibraryProvider>
     </JamBusProvider>
   );
+}
+
+/* Small readers of the shared library (it's provided inside this component's tree). */
+function ActiveSongTeleprompter({ onUnlock }: { onUnlock: () => void }) {
+  const { activeSong } = useLibrary();
+  return <Teleprompter song={activeSong} locked onToggleLock={onUnlock} compact />;
+}
+
+function ArrangementForActiveSong() {
+  const { activeSong } = useLibrary();
+  return <ArrangementBoard bpm={activeSong.bpm} />;
 }

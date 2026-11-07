@@ -18,6 +18,9 @@ export interface SessionValue {
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string, displayName: string) => Promise<void>;
   logout: () => Promise<void>;
+  /** Signs in with a new password using a reset link's token. */
+  resetPassword: (token: string, password: string) => Promise<void>;
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
   updateProfile: (patch: Partial<Pick<AccountUser, 'displayName' | 'gender' | 'tint'>>) => Promise<void>;
   createBand: (name: string) => Promise<Band>;
   joinBand: (code: string) => Promise<Band>;
@@ -105,6 +108,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       logout: async () => {
         await api.logout().catch(() => undefined);
         signedOut();
+      },
+      resetPassword: async (token, password) => apply(await api.resetPassword(token, password)),
+      changePassword: async (currentPassword, newPassword) => {
+        await authed(() => api.changePassword(currentPassword, newPassword));
       },
       updateProfile: async (patch) => apply(await authed(() => api.updateMe(patch))),
       createBand: async (name) => {

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useJamBus } from '../../context/JamBusContext';
-import { LANES, useLibrary, type LaneId } from '../../context/LibraryContext';
+import { LANES, useLibrary, type LaneId, type SyncStatus } from '../../context/LibraryContext';
 import { useUserPreferences } from '../../context/UserPreferencesContext';
 import { useLayerRecorder } from '../../hooks/useLayerRecorder';
 import { useStudioPlayback } from '../../hooks/useStudioPlayback';
@@ -71,7 +71,10 @@ export function SongStudio() {
       {/* Header */}
       <div className="jp-card flex flex-wrap items-center gap-3 p-4">
         <div className="min-w-0">
-          <p className="jp-label">Song blueprint</p>
+          <p className="jp-label flex items-center gap-2">
+            Song blueprint · shared with your band
+            <SyncBadge status={lib.sync} error={lib.syncError} />
+          </p>
           <h2 id="studio-title" className="font-display text-2xl font-bold">
             {song.title}
           </h2>
@@ -236,5 +239,23 @@ export function SongStudio() {
         ))}
       </div>
     </section>
+  );
+}
+
+const SYNC_LABEL: Record<SyncStatus, { text: string; cls: string }> = {
+  loading: { text: 'loading…', cls: 'bg-panel text-muted' },
+  saved: { text: '✓ saved', cls: 'bg-ok/15 text-ok' },
+  saving: { text: 'saving…', cls: 'bg-accent-soft text-accent' },
+  offline: { text: 'offline · changes kept', cls: 'bg-danger/15 text-danger' },
+  error: { text: 'not saved', cls: 'bg-danger/15 text-danger' },
+};
+
+/** Tiny status pill for the band library's cloud sync. */
+function SyncBadge({ status, error }: { status: SyncStatus; error: string | null }) {
+  const s = SYNC_LABEL[status];
+  return (
+    <span className={cx('rounded-full px-2 py-0.5 font-mono text-[9px] tracking-normal normal-case', s.cls)} title={error ?? undefined} role="status">
+      {s.text}
+    </span>
   );
 }

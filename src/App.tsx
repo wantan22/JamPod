@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { Band } from './auth/api';
 import { AuthScreen } from './auth/AuthScreen';
+import { ResetPasswordScreen } from './auth/ResetPasswordScreen';
 import { RoomPicker } from './auth/RoomPicker';
 import { useSession } from './auth/SessionContext';
 import { JamPodDashboard } from './components/JamPodDashboard';
 import { CompanionView } from './components/live/CompanionView';
-import { LibraryProvider } from './context/LibraryContext';
 import { UserPreferencesProvider, useThemePreference, type RosterEntry } from './context/UserPreferencesContext';
 
 /** Read once at startup, then strip from the address bar. */
@@ -13,6 +13,7 @@ const initialParams = new URLSearchParams(window.location.search);
 const INVITE = initialParams.get('invite')?.trim().toUpperCase() || null;
 const COMPANION_ROOM = initialParams.has('companion') ? initialParams.get('room') : null;
 const DEEP_LINK_ROOM = initialParams.get('room');
+const RESET_TOKEN = initialParams.get('reset');
 
 const clearParams = (...keys: string[]) => {
   const url = new URL(window.location.href);
@@ -30,7 +31,13 @@ export function App() {
   const session = useSession();
   useThemePreference(); // apply the saved theme before any room is open
   const [inviteError, setInviteError] = useState<string | null>(null);
+  const [resetToken, setResetToken] = useState<string | null>(RESET_TOKEN);
   const handledLinks = useRef(false);
+
+  // Keep the reset token out of the address bar (and browser history) once read.
+  useEffect(() => {
+    if (RESET_TOKEN) clearParams('reset');
+  }, []);
 
   // One-time: accept an invite link, or follow a ?room= deep link.
   useEffect(() => {
@@ -49,6 +56,10 @@ export function App() {
   }, [session]);
 
   if (session.status === 'loading') return <Splash text="Tuning up…" />;
+  // A reset link works whether or not this browser is already signed in.
+  if (resetToken && session.status !== 'offline') {
+    return <ResetPasswordScreen token={resetToken} onDone={() => setResetToken(null)} />;
+  }
   if (session.status === 'offline') {
     return (
       <Splash text="Can’t reach the JamPod server.">
@@ -85,9 +96,7 @@ export function App() {
 
   return (
     <BandRoom band={session.activeBand}>
-      <LibraryProvider>
-        <JamPodDashboard />
-      </LibraryProvider>
+      <JamPodDashboard />
     </BandRoom>
   );
 }
