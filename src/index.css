@@ -1,0 +1,208 @@
+@import 'tailwindcss';
+
+/*
+ * JamPod design tokens.
+ * Two analog-studio themes are expressed as raw CSS variables on [data-theme],
+ * then mapped into Tailwind's color namespace so utilities like `bg-surface`
+ * or `text-accent` follow the active theme automatically.
+ */
+
+:root,
+[data-theme='dark'] {
+  /* Midnight Lounge */
+  --jp-bg: #121214;
+  --jp-surface: #1a2130;
+  --jp-panel: #2a364f;
+  --jp-panel-2: #33415e;
+  --jp-line: rgba(237, 230, 214, 0.1);
+  --jp-ink: #ede6d6;
+  --jp-muted: #9aa3b5;
+  --jp-accent: #e8b464;
+  --jp-accent-ink: #1b1408;
+  --jp-accent-soft: rgba(232, 180, 100, 0.16);
+  --jp-danger: #e07a5f;
+  --jp-ok: #8fb996;
+  --jp-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 12px 30px -12px rgba(0, 0, 0, 0.6);
+  --jp-grain-opacity: 0.035;
+  color-scheme: dark;
+}
+
+[data-theme='light'] {
+  /* Oatmeal Studio */
+  --jp-bg: #f4f1ea;
+  --jp-surface: #ece5d6;
+  --jp-panel: #e3d7c0;
+  --jp-panel-2: #d8c9ad;
+  --jp-line: rgba(60, 47, 47, 0.12);
+  --jp-ink: #3c2f2f;
+  --jp-muted: #7a6a5e;
+  --jp-accent: #6e8b67;
+  --jp-accent-ink: #f4f1ea;
+  --jp-accent-soft: rgba(110, 139, 103, 0.18);
+  --jp-danger: #b5533c;
+  --jp-ok: #5d7f55;
+  --jp-shadow: 0 1px 0 rgba(255, 255, 255, 0.6) inset, 0 10px 24px -14px rgba(60, 47, 47, 0.45);
+  --jp-grain-opacity: 0.07;
+  color-scheme: light;
+}
+
+@theme inline {
+  --color-bg: var(--jp-bg);
+  --color-surface: var(--jp-surface);
+  --color-panel: var(--jp-panel);
+  --color-panel-2: var(--jp-panel-2);
+  --color-line: var(--jp-line);
+  --color-ink: var(--jp-ink);
+  --color-muted: var(--jp-muted);
+  --color-accent: var(--jp-accent);
+  --color-accent-ink: var(--jp-accent-ink);
+  --color-accent-soft: var(--jp-accent-soft);
+  --color-danger: var(--jp-danger);
+  --color-ok: var(--jp-ok);
+  --font-sans: 'Nunito', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Fraunces', ui-serif, Georgia, serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --shadow-studio: var(--jp-shadow);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--jp-bg);
+  color: var(--jp-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  transition: background-color 400ms ease, color 400ms ease;
+}
+
+/* Subtle film-grain texture so neither theme reads as flat/sterile. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: var(--jp-grain-opacity);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+::selection {
+  background: var(--jp-accent);
+  color: var(--jp-accent-ink);
+}
+
+/* ---------- Reusable component layer ---------- */
+@layer components {
+  .jp-card {
+    @apply relative rounded-2xl border border-line bg-surface shadow-studio;
+  }
+  .jp-label {
+    @apply font-mono text-[10px] font-medium tracking-[0.18em] text-muted uppercase;
+  }
+  .jp-btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-xl border border-line bg-panel px-3 py-1.5 text-sm font-semibold text-ink transition hover:bg-panel-2 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .jp-btn-accent {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-xl bg-accent px-3 py-1.5 text-sm font-bold text-accent-ink transition hover:brightness-110 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .jp-input {
+    @apply w-full rounded-xl border border-line bg-bg/60 px-3 py-2 text-sm text-ink placeholder:text-muted focus:border-accent focus:outline-none;
+  }
+}
+
+/* ---------- Range slider styling (analog fader look) ---------- */
+input[type='range'].jp-fader {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  height: 18px;
+}
+input[type='range'].jp-fader::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--track, var(--jp-panel-2));
+}
+input[type='range'].jp-fader::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--track, var(--jp-panel-2));
+}
+input[type='range'].jp-fader::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  margin-top: -6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: linear-gradient(180deg, #f6efe0, #b9ae98);
+  border: 1px solid rgba(0, 0, 0, 0.35);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.35);
+  cursor: grab;
+}
+input[type='range'].jp-fader::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: linear-gradient(180deg, #f6efe0, #b9ae98);
+  border: 1px solid rgba(0, 0, 0, 0.35);
+  cursor: grab;
+}
+input[type='range'].jp-fader:focus-visible {
+  outline: 2px solid var(--jp-accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* ---------- Stage animation keyframes ---------- */
+@keyframes jp-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+@keyframes jp-walk {
+  0%, 100% { transform: translateY(0) rotate(-2deg); }
+  50% { transform: translateY(-7px) rotate(2deg); }
+}
+@keyframes jp-blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  95% { transform: scaleY(0.1); }
+}
+@keyframes jp-pulse-ring {
+  0% { transform: scale(0.85); opacity: 0.7; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+@keyframes jp-led-flicker {
+  0%, 100% { opacity: 1; }
+  48% { opacity: 0.92; }
+  50% { opacity: 0.85; }
+  52% { opacity: 0.95; }
+}
+@keyframes jp-slide-in {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+@keyframes jp-fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes jp-strike {
+  from { stroke-dashoffset: 300; }
+  to { stroke-dashoffset: 0; }
+}
+
+.jp-bob { animation: jp-bob 1.6s ease-in-out infinite; }
+.jp-walk { animation: jp-walk 0.36s ease-in-out infinite; }
+.jp-blink { animation: jp-blink 4.5s infinite; transform-origin: center; transform-box: fill-box; }
+.jp-led { animation: jp-led-flicker 7s infinite; }
+.jp-fade-up { animation: jp-fade-up 260ms ease-out both; }
+.jp-drawer { animation: jp-slide-in 280ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "name": "jampod",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:https": "vite --mode https",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b --noEmit",
+    "preview": "vite preview",
+    "start": "node --env-file-if-exists=.env server/index.mjs"
+  },
+  "engines": {
+    "node": ">=22.9"
+  },
+  "dependencies": {
+    "pg": "^8.23.1",
+    "qrcode": "^1.5.4",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "ws": "^8.22.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.4",
+    "@types/node": "^22.20.5",
+    "@types/qrcode": "^1.5.5",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "@vitejs/plugin-basic-ssl": "^2.3.0",
+    "@vitejs/plugin-react": "^4.4.1",
+    "tailwindcss": "^4.1.4",
+    "typescript": "~5.8.3",
+    "vite": "^6.3.2"
+  }
+}

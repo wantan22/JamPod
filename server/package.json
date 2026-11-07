@@ -1,0 +1,15 @@
+{
+  "name": "jampod-server",
+  "private": true,
+  "version": "0.2.0",
+  "description": "JamPod accounts API + members-only WebSocket relay + static frontend host.",
+  "type": "module",
+  "main": "index.mjs",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

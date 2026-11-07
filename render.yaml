@@ -1,0 +1,21 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# One free web service runs the whole app (frontend + /api + /jam WebSockets).
+# Accounts live in Supabase Postgres, because free Render services have no disk.
+services:
+  - type: web
+    name: jampod
+    runtime: node
+    plan: free
+    region: singapore
+    # If this app lives in a subfolder of your repo, set rootDir to that folder.
+    # rootDir: jampod
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /jam/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22.12.0"
+      # Paste the Supabase connection string in the Render dashboard (kept secret).
+      - key: DATABASE_URL
+        sync: false
